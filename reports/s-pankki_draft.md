@@ -17,9 +17,9 @@ CORS Misconfiguration + Cookie Security (SameSite=None)
 
 ## Executive Summary
 
-**PRIMARY FINDING:** CORS wildcard (`Access-Control-Allow-Origin: *`) on netbank domain `online.s-pankki.fi` combined with `SameSite=None` cookie `keycross`. Any origin can make cross-origin requests to the netbank domain; browser automatically sends the `keycross` cookie in cross-site requests. This enables potential data exfiltration from `/ebank/` API endpoints via malicious JavaScript.
+**PRIMARY FINDING:** CORS wildcard (`Access-Control-Allow-Origin: *`) on root domain `online.s-pankki.fi` only — /ebank/ API endpoints do NOT have CORS wildcard. Root domain returns HTML redirect page (no sensitive data). Browser does NOT send credentials with wildcard (`*`). Policy: "Unauthenticated CSRF" is out of scope.
 
-**Secondary findings:** CSRF token anomaly (token repeated 3x), mTLS banking API exposure, Keycloak admin on public subdomain.
+**Secondary findings:** CSRF token anomaly (standard Struts2), mTLS banking API, Keycloak admin on public subdomain, weak CSP on public pages.
 
 ## Affected Asset
 
@@ -31,11 +31,13 @@ CORS Misconfiguration + Cookie Security (SameSite=None)
 
 ## Severity
 
-- Recommended priority: **P1 (Critical)** — CORS wildcard on banking domain
-- Impact severity: **High** — potential data exfiltration from netbank API
-- CVSS version/vector: CVSS 3.1 / AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:N/A:N (estimated)
-- Confidence: **High** — confirmed via live curl test
-- Why P1: Banking domain, cross-site cookie, CORS wildcard = potential account data exposure
+- FINDING-1 (CORS wildcard): **P3/Low** — root domain only, no sensitive data, no credentials sent
+- FINDING-3 (mTLS): **P2/Medium** — banking API client cert required
+- FINDING-4 (Keycloak admin): **P2/Medium** — IP-restricted but publicly visible
+- FINDING-6 (subdomain exposure): **P3/Medium** — scope management issue
+- FINDING-5 (API Gateway): **P3/Low-Medium** — custom auth review
+- FINDING-2 (CSRF token): **Informational** — standard Struts2 behavior
+- FINDING-7 (Weak CSP): **P4/Low** — public pages only
 
 ## Preconditions
 
@@ -47,38 +49,49 @@ CORS Misconfiguration + Cookie Security (SameSite=None)
 
 ## Proof of Concept
 
-### Step 1 — Baseline
-```bash
-curl -sI https://online.s-pankki.fi
-```
+### FINDING-1: CORS Wildcard (Root Domain Only)
 
-### Step 2 — Request (CORS test)
+**Step 1 — Root domain (CORS wildcard):**
 ```bash
 curl -sI -H "Origin: https://evil.com" https://online.s-pankki.fi
 ```
+**Result:** `Access-Control-Allow-Origin: *` ✅ CONFIRMED
 
-### Step 3 — Result
+**Step 2 — /ebank/ API (NO CORS):**
+```bash
+curl -sI -H "Origin: https://evil.com" https://online.s-pankki.fi/ebank/auth/initLogin.do
 ```
-HTTP/1.1 200 OK
-Access-Control-Allow-Origin: *
-Set-Cookie: keycross=[REDACTED]; Secure; HttpOnly; SameSite=None
-Strict-Transport-Security: max-age=31536000; includeSubDomains
-```
-**CONFIRMED:** CORS wildcard present on netbank domain with cross-site cookie.
+**Result:** No CORS header ✅ CONFIRMED
 
-### Step 4 — Impact confirmation
-- Cookie `keycross` is HttpOnly (JS cannot read value, but browser sends automatically)
-- `SameSite=None` means cookie sent in cross-site requests
-- CORS `*` means any origin can make requests
-- Combined: malicious page can make authenticated requests to netbank API
+**Step 3 — Login endpoint (OPTIONS rejected):**
+```bash
+curl -sI -X OPTIONS -H "Origin: https://evil.com" https://online.s-pankki.fi/ebank/auth/loginEbank.do
+```
+**Result:** 405 Method Not Allowed ✅ CONFIRMED
+
+**CONFIRMED:** CORS wildcard only on root domain. Root returns redirect HTML. /ebank/ APIs not affected. No credentials sent with wildcard.
+
+### FINDING-7: Weak CSP
+
+**Step 1 — Check CSP:**
+```bash
+curl -sI https://www.s-pankki.fi 2>/dev/null | grep -i content-security
+```
+**Result:** `script-src 'self' 'unsafe-inline' 'unsafe-eval'` ✅ CONFIRMED
 
 ## Confirmed Impact
 
-- Confidentiality: High — API responses accessible from any origin
-- Integrity: Medium — potential for authenticated API calls
-- Availability: Low — no DoS impact
-- Affected scope: All `/ebank/` endpoints under online.s-pankki.fi
-- Attacker capability: Requires victim to be logged in and visit malicious page
+- FINDING-1: CORS wildcard on root domain only — LOW impact
+- FINDING-2: CSRF token standard behavior — informational
+- FINDING-3: mTLS banking API — MEDIUM potential risk
+- FINDING-4: Keycloak admin exposed — MEDIUM
+- FINDING-5: API Gateway custom auth — LOW-MEDIUM
+- FINDING-6: Subdomain overexposure — MEDIUM scope issue
+- FINDING-7: Weak CSP on public pages — LOW
+- Confidentiality: Low-Medium depending on finding
+- Integrity: Low-Medium
+- Availability: N/A
+- Attacker capability: Varies by finding
 
 ## Why This Priority
 
